@@ -19,6 +19,20 @@ struct Cli {
     command: Commands,
 }
 
+//TODO: Add option to give recent an existing playlist name prefix to add the recent songs to instead of making a new playlist
+//Fetch all playlists of user
+//Search names by valid prefixes
+//Add if only 1 matches
+//Implement as a trie!
+//No del/insert of trie, just construct then search (easy peasy)
+//Add flag for new playlist vs. find existing (-n, -f)
+//--name, --find
+
+//TODO: Avoid adding duplicate songs to the playlist
+//Grab uri's from playlist first and check if they match any of the recently played uri's
+//If match, remove from uri's to be added
+
+
 #[derive(Subcommand)]
 enum Commands {
     Login,
@@ -32,9 +46,6 @@ enum Commands {
 
     Refresh
 }
-
-
-
 
 const CLIENT_ID: &str = "029dec42942148988a90b86aa92756dd";
 const REDIRECT_URI: &str = "http://127.0.0.1:8888/callback";
@@ -124,14 +135,16 @@ fn generate_code_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(digest)
 }
 
-async fn get_token() -> Result<Option<SpotifyTokenResponse>, Box<dyn std::error::Error>> {
-    let refresh_token = std::fs::read_to_string("refresh_token.txt");
+async fn get_token(use_refresh: bool) -> Result<Option<SpotifyTokenResponse>, Box<dyn std::error::Error>> {
+    let mut refresh_token = std::fs::read_to_string("refresh_token.txt");
 
     let mut token_response: Option<SpotifyTokenResponse> = None;
     let client = reqwest::Client::new();
 
-    match refresh_token {
-    Ok(token) => {
+    let pair = (refresh_token, use_refresh);
+
+    match pair {
+    (Ok(token), true) => {
         println!("Using saved refresh token");
         
         
@@ -152,7 +165,7 @@ async fn get_token() -> Result<Option<SpotifyTokenResponse>, Box<dyn std::error:
         token_response = res.json().await?;
     }
 
-    Err(_) => {
+    _ => {
         println!("No refresh token, starting browser login");
 
         // 1. PKCE setup
@@ -270,7 +283,7 @@ async fn get_token() -> Result<Option<SpotifyTokenResponse>, Box<dyn std::error:
 
 //Returns access token
 async fn login() -> Result<String, Box<dyn std::error::Error>> {
-    let token_response: Option<SpotifyTokenResponse> = get_token().await?;
+    let token_response: Option<SpotifyTokenResponse> = get_token(false).await?;
 
     if let Some(token_response) = token_response {
         println!("Access token: {}", token_response.access_token);
@@ -288,6 +301,101 @@ async fn login() -> Result<String, Box<dyn std::error::Error>> {
     }
 }
 
+async fn GETRecentlyPlayed(num_songs: u32) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get("https://api.spotify.com/v1/me/player/recently-played")
+        .header(
+            "Authorization",
+            format!("Bearer {}", access_token)
+        )
+        .query(&[
+            ("limit", num_songs.to_string()),
+        ])
+        .send()
+        .await?;
+
+    let out: SpotifyRecentlyPlayedResponse = response.json().await?;
+
+    let mut recently_played_uris: Vec<String> = vec![];
+
+    for item in out.items.iter() {
+        println!("{}", item.track.name);
+        recently_played_uris.push(item.track.uri.clone());
+    }
+
+    Ok(recently_played_uris)
+}
+
+async fn POSTNewPlaylist(params: CreatePlaylisRequest) -> Result<CreatePlaylistResponse, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+
+    let create_playlist_req = client
+        .post("https://api.spotify.com/v1/me/playlists")
+        .header(
+            "Authorization",
+            format!("Bearer {}", access_token)
+        )
+        .json(&playlist_params)
+        .send()
+        .await?;
+
+    let status = create_playlist_req.status();
+    println!("Status: {}", status);
+
+    let create_result: CreatePlaylistResponse = create_playlist_req.json().await?;
+
+    Ok(create_result)
+}
+
+async fn DELETEPlaylist(playlist_ID: String) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+
+    let delete_request = client
+        .delete("https://api.spotify.com/v1/me/library")
+        .header(
+                "Authorization",
+                format!("Bearer {}", access_token)
+            )
+        .query(&[
+                ("uris", &create_result.uri),
+            ])
+        .send()
+        .await?;
+    
+    Ok(())
+}
+
+async fn PUTSongsIntoPlaylist(playlist_ID: String, add_tracks_request: AddTracksRequest) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+
+    let put_request = client
+        .post(format!("https://api.spotify.com/v1/playlists/{}/items", create_result.id))
+        .header(
+            "Authorization",
+            format!("Bearer {}", access_token)
+        )
+        .json(&add_tracks_request)
+        .send()
+        .await?;
+
+    let status = put_request.status();
+    println!("Status: {}", status);
+
+    Ok(())
+}
+
+async fn PUTRefresh(playlist_ID: String) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+
+    let update_request = client
+        .put(format!("https://api.spotify.com/v1/playlists/{}/followers", playlist_ID))
+        .send()
+        .await?;
+    Ok(())
+}
+
 #[tokio::main] //Starts a Tokio async runtime which allows for: Running HTTP server, waiting without blocking, handling browser callback
 async fn main() -> Result<(), Box<dyn std::error::Error>> { //Means that on success we return nothing (unit type = "()") and on error we return the boxed error
     let args = Cli::parse();
@@ -298,42 +406,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> { //Means that on succ
         }
 
         Commands::Refresh {} => {
-            let access_token: String = login().await?;
             let client = reqwest::Client::new();
+            let access_token: String = login().await?;
 
             let playlist_params: CreatePlaylistRequest = CreatePlaylistRequest { name: "TEMP".to_string(), description: "TEMP".to_string() };
-
-            let create_playlist_req = client
-                .post("https://api.spotify.com/v1/me/playlists")
-                .header(
-                    "Authorization",
-                    format!("Bearer {}", access_token)
-                )
-                .json(&playlist_params)
-                .send()
-                .await?;
-
-            let status = create_playlist_req.status();
-            println!("Status: {}", status);
-
-            let create_result: CreatePlaylistResponse = create_playlist_req.json().await?;
-
-            let delete_request = client
-            .delete("https://api.spotify.com/v1/me/library")
-            .header(
-                    "Authorization",
-                    format!("Bearer {}", access_token)
-                )
-            .query(&[
-                    ("uris", &create_result.uri),
-                ])
-            .send()
-            .await?;
+            let create_response: CreatePlaylistResponse = POSTNewPlaylist(playlist_params).await?;
+            DELETEPlaylist(create_response.uri).await?;
         }
 
         Commands::Recent{num_songs, name} => {
-            let access_token: String = login().await?;
             let client = reqwest::Client::new();
+            let access_token: String = login().await?;
 
             println!("Access token: {}", access_token);
 
@@ -355,26 +438,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> { //Means that on succ
 
             //Request body (for POST/PUT) are used to SEND data to spotify (i.e. creating a playlist)
 
-            let response = client
-                .get("https://api.spotify.com/v1/me/player/recently-played")
-                .header(
-                    "Authorization",
-                    format!("Bearer {}", access_token)
-                )
-                .query(&[
-                    ("limit", num_songs.to_string()),
-                ])
-                .send()
-                .await?;
-
-            let out: SpotifyRecentlyPlayedResponse = response.json().await?;
-
-            let mut recently_played_uris: Vec<String> = vec![];
-
-            for item in out.items.iter() {
-                println!("{}", item.track.name);
-                recently_played_uris.push(item.track.uri.clone());
-            }
+            let recently_played_uris: Vec<String> = GETRecentlyPlayed(num_songs).await?;
 
             let body = AddTracksRequest {
                 uris: recently_played_uris.clone(),
@@ -383,40 +447,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> { //Means that on succ
 
             let playlist_params: CreatePlaylistRequest = CreatePlaylistRequest { name: name, description: "NA".to_string() };
 
-            let create_playlist_req = client
-                .post("https://api.spotify.com/v1/me/playlists")
-                .header(
-                    "Authorization",
-                    format!("Bearer {}", access_token)
-                )
-                .json(&playlist_params)
-                .send()
-                .await?;
-
-            let status = create_playlist_req.status();
-            println!("Status: {}", status);
-
-            let create_result: CreatePlaylistResponse = create_playlist_req.json().await?;
+            let create_result = POSTNewPlaylist(playlist_params).await?;
 
             println!("Playlist ID: {}", create_result.id);
 
-            let put_request = client
-                .post(format!("https://api.spotify.com/v1/playlists/{}/items", create_result.id))
-                .header(
-                    "Authorization",
-                    format!("Bearer {}", access_token)
-                )
-                .json(&body)
-                .send()
-                .await?;
-
-            let status = put_request.status();
-            println!("Status: {}", status);
-
-            let update_request = client
-            .put(format!("https://api.spotify.com/v1/playlists/{}/followers", create_result.id))
-            .send()
-            .await?;
+            PUTRefresh(create_result.id).await?;
         }
     }
 
