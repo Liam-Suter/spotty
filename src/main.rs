@@ -498,17 +498,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> { //Means that on succ
             login(false).await?;
         }
 
-        Commands::Prefix{prefix} => {
-            let access_token: String = login(true).await?;
-            let playlists: Vec<SimplifiedPlaylistObject> = get_user_playlists(&access_token).await?;
-
-            for playlist_obj in playlists.iter() {
-                if playlist_obj.name.to_lowercase().starts_with(&prefix.to_lowercase()) {
-                    println!("MATCH FOUND: {}", playlist_obj.name);
-                }
-            }
-        }
-
         Commands::Refresh {} => {
            let access_token: String = login(true).await?;
 
