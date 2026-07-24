@@ -18,19 +18,7 @@ struct Cli {
     command: Commands,
 }
 
-//TODO: Add option to give recent an existing playlist name prefix to add the recent songs to instead of making a new playlist
-//Fetch all playlists of user
-//Search names by valid prefixes
-//Add if only 1 matches
-//Implement as a trie!
-//No del/insert of trie, just construct then search (easy peasy)
-//Add flag for new playlist vs. find existing (-n, -f)
-//--name, --find
-
-//TODO: Avoid adding duplicate songs to the playlist
-//Grab uri's from playlist first and check if they match any of the recently played uri's
-//If match, remove from uri's to be added
-
+//TODO: Make app part have a cute feature that fills a jar with block representing all the songs you've played since openign the app
 
 #[derive(Subcommand)]
 enum Commands {
@@ -38,12 +26,7 @@ enum Commands {
 
     Recent(RecentArgs),
 
-    Refresh,
-
-    Prefix {
-        #[arg(short, long)]
-        prefix: String
-    }
+    Refresh
 }
 
 #[derive(Args)]
